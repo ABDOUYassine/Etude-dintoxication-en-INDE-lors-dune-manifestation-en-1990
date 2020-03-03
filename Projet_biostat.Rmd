@@ -1,0 +1,1402 @@
+---
+output:
+ pdf_document: 
+   number_sections: yes
+   toc: yes
+   toc_depth: 4
+header-includes: \usepackage[french]{babel}
+---
+\newpage
+\listoftables
+\newpage
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+set.seed(0207)
+#   ____________________________________________________________________________
+#   Packages                                                                ####
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(kableExtra)
+library(ggthemes)
+library(reshape2)
+library(gridExtra)
+library(tidyverse)
+library(naniar)
+library(mice)
+library(MASS)
+library(ggpubr)
+library(patchwork)
+library(DescTools)
+#   ____________________________________________________________________________
+#   II. Vector of colours                                                   ####
+Pamplemousse_colour <-
+  c("#0218a2", "#ffb703", "#f76f73", "#027fdc", "#07c4c5")
+Nueva_colour <-
+  c("#012345", "#aa2345", "#ffa500", "#abcdef", "#d7a0e1")
+
+
+#   ____________________________________________________________________________
+#   Importation des fonctions                                               ####
+source("Fonctions/NA_percentage.r")
+source("Fonctions/NA_percentage_col.r")
+source("Fonctions/Precision.r")
+source("Fonctions/err_prediction.r")
+
+#   ____________________________________________________________________________
+#   Importation du jeu de données                                           ####
+
+Intoxications <-
+  read.table(file = "Datas/Intoxications.csv", sep = ";", header = T) %>%
+  dplyr::select(-1)
+
+colnames(Intoxications) <- Intoxications %>%
+  names() %>%
+  str_replace_all("é", "e") %>%
+  str_remove("\\..")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+df <- Intoxications %>%
+  dplyr::select(-age) %>%
+  replace_with_na_all(condition = ~ .x %in% c(90, 9)) %>%
+  mutate(age = Intoxications$age) %>%
+  replace_with_na(replace = list(age = 99))
+
+df %>%
+  attach()
+
+df$eclair <- ifelse(eclair == 80, median(na.omit(eclair)), eclair)
+
+df %>%
+  detach()
+```
+
+
+# Introduction
+
+Le but de ce projet est d'appliquer les méthodes statistiques abordées dans le cours du modèle de biostatistique sur un cas concret.
+
+Dans un premier temps, nous allons pré-traiter le jeu de données *(recodage des variables, choix de la méthode d'imputation des données manquantes)* et faire des analyses descriptives afin de collecter le maximum d'informations sur les possibles relations entre les variables.
+
+Dans un second temps, nous allons élaborer des régressions logistiques dans le but de soumettre des hypothèses. 
+
+Notre table ne comporte ni des covariables qui varient en fonction du temps, ni des données appariées, alors on ne pourra pas faire une analyse de survie.
+
+# Présentation de la table
+
+Le jeu de données à été récolté en **1990** en **Inde** après une grande manifestation. A la suite de cas d'intoxications alimentaires constatées, l'enquête a été menée sur un grand échantillon d'individus (*1094 individus*) ayant participé à cette manifestation
+
+## Statistiques descriptives
+
+Le jeu de données contient **4** variables explivatives qualitatives. Pour les variables du type alimentaire, l'individu devait répondre à la question suivante: **Avez-vous manger cet aliment lors de l'événement ?**.
+
+La table suivante présente un résumé de ces variables : 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+data.frame(
+  Sexe = ifelse(df$sex == 0, "Femme", "Homme"),
+  Boeuf = ifelse(df$Boeuf == 1, "Oui", "Non"),
+  Oeuf = ifelse(df$Oeuf == 1, "Oui", "Non"),
+  Eau = ifelse(df$Eau == 1, "Oui", "Non")
+) %>%
+  summary() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Résumé des variables qualitatives",
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(0:2),
+    bold = T,
+    background = "white"
+  ) %>%
+  row_spec(3, bold = T, background = "white", color = "red")
+
+```
+
+Le jeu de données contient en plus, **2** variables explivatives quantitatives. L'**âge** *(en années)* et l'**éclairs** *(Nombre d'éclairs mangés par chanque individu)*
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+df %>%
+  dplyr::select(age, eclair) %>%
+  summary() %>%
+  as.data.frame() %>%
+  separate(Freq, c("description", "freq"), ":") %>%
+  pivot_wider(names_from = description, values_from = freq) %>%
+  dplyr::select(-Var1) %>%
+  rename(variables = Var2) %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Résumé des variables quantitatives",
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(0:2,
+    bold = T,
+    background = "white"
+  ) %>%
+  column_spec(8, bold = T, color = "red")
+```
+
+La table ci-dessous présente un résumé des variables contenant l'information sur les symptomes chez les individus.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+data.frame(
+  Nausee = ifelse(df$Nausee == 0, "Non", "oui"),
+  Vomissements = ifelse(df$Vomissements == 1, "Oui", "Non"),
+  Douleur = ifelse(df$Douleur == 1, "Oui", "Non"),
+  Diarree = ifelse(df$Diarree == 1, "Oui", "Non")
+) %>%
+  summary() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Résumé des variables de symptôme ",
+    col.names = c('Nausée', 'Vomissements', 'Douleur', 'Diarrée')
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(0:2,
+    bold = T,
+    background = "white"
+  )
+```
+
+### Corrélation 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+cor(Intoxications) %>%
+  round(2) %>%
+  melt() %>%
+  ggplot(aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  labs(x = "", y = "", title = "Matrice de corrélation (heatmap)") +
+  scale_fill_gradient2(
+    low = "gray",
+    high = "#DB7093",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1, 1),
+    space = "Lab",
+    name = "Pearson\nCorrelation"
+  ) +
+  geom_text(aes(Var2, Var1, label = value),
+    color = "black",
+    size = 4
+  ) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(
+      size = 12,
+      angle = 45,
+      hjust = 1
+    )
+  ) +
+  coord_flip()
+```
+
+Nous observons dans le graphe ci-dessus que les variables **Eau**, **Boeuf** et **Oeuf** sont très corrélées (*positivement*) entre elles, aussi pour les **variables de symptôme**. Cependant nous constatons que les variables de symptôme ont une faible corrélation avec le reste des variables.
+
+## Données manquantes
+
+Une donnée incomplète est une donnée pour laquelle la valeur de certain attribut est inconnue, ces valeurs sont dites manquantes.
+
+Les valeurs manquantes peuvent être de deux types : 
+
+- Valeur manquante totale \footnote{C’est-à-dire que toute l’observation manque}
+
+- Valeur manquante partielle \footnote{C’est-à-dire que l’observation est présente mais il
+manque certaines valeurs de cette observation}
+
+En général, des valeurs manquent dans un jeu de données parce qu’**elles n’ont pas pu être observées**, **elles ont été perdues** ou **elles n’étaient pas enregistrées**. 
+
+### Mécanisme des valeurs manquantes
+
+Avant d'entamer le traitement des données manquantes, nous allons tout d'abord évaluer le mécanisme de ces dernières.
+
+Selon **Little, R.J.A.**, and **Rubin, D.B.** (2002), il y a trois mécanismes distincts de valeurs manquantes :
+
+- **MCAR**\footnote{Missing completly at random}: le fait de ne pas avoir la valeur pour une variable, est indépendant des
+autres variables.
+
+- **MAR**\footnote{Missing at random}: le fait de ne pas avoir la valeur pour une variable, est dépendant seulement des valeurs observées.
+
+- **MNAR**\footnote{Missing Not at Random} : le fait de ne pas avoir la valeur pour une variable ne dépendant que des valeurs
+manquantes.
+
+Selon **Simon et Smonoff** (1986) et **Little** (1988), il est difficile de traiter des données de type MNAR et MAR, ce qui nous incite à faire l’hypothèse que le manque de données est de nature **MCAR**, dans la pratique, et comme l'expliquent **Schafer et Graham** (2002), il est quasiment impossible de déterminer lequel des trois mécanismes est à l'œuvre à partir des données.
+
+### Comportement des données manquantes
+
+Comme indiqué dans la partie descriptive, certaines variables contiennent des valeurs manquantes. Le graphe ci-dessous nous montre le pourcentage des valeures manquantes pour chaque variable.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#   ____________________________________________________________________________
+#   Descriptive part of missing data                                        ####
+
+Miss_NA_real <- NA_percentage(df)
+
+##  ............................................................................
+##  Graphe of missing values by columns                                     ####
+
+pMiss_col <- data.frame(
+  Variables = colnames(df),
+  pMiss_NA_col = apply(df, 2, NA_percentage_col)
+)
+
+gg_pMisssup0 <- pMiss_col %>%
+  filter(pMiss_NA_col > 0)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+gg_pMisssup0 %>%
+  ggplot(mapping = aes(
+    x = reorder(Variables, -pMiss_NA_col),
+    y = pMiss_NA_col,
+    fill = "#DB7093"
+  )) +
+  scale_fill_manual(values = "#DB7093") +
+  geom_bar(stat = "identity") +
+  labs(
+    x = "Variables",
+    y = "Pourcentage",
+    title = "Pourcentage des NA's par colonne"
+  ) +
+  geom_text(aes(label = paste0(gg_pMisssup0$pMiss_NA_col %>% round(2), "%")), vjust = -0.2) +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Rappelons que les valeurs qui faisaient référence aux données manquantes dans la variable **Eclair** sont **80** et **90** correspondent respectivement à *l'individu a mangé des éclairs sans se souvenir combien* et *données manquantes*. Cela veut dire que si nous remplaçons les valeurs **80** de cette variable par des **NA's**, à l'imputation, ces dernières peuvent être remplacées par la valeur **0**, ce qui est impossible. Pour cela nous avons choisi de les imputées par la **médianne**. 
+
+Pour les autres variables*(age, Eau, ...)*, nous n'avons pas ce problème, Donc, nous avons décidé de les imputées par différentes méthodes d'*imputation* afin de choisir la méthode la plus adaptée à notre jeu de données. 
+
+**Comment peut-on faire ce choix ? **
+
+Nous allons commencer par imputer toutes les **NA's** par une méthode d'imputation multiple (*EX: KNN*), ensuite, nous allons considérer **la table imputée** comme notre table de test (*table complète*), nous allons nous servir de la fonction **ampute()** pré-définie sur **R** pour générer des valeurs manquantes dans notre table de test, cette fonction nous permet de choisir le pourcentage des NA's que nous souhaitons générer aussi le mécanisme (**MCAR**, **MAR**, ou bien **MNAR**) et finalement, nous allons les imputées par différentes méthodes et choisir la plus adaptée.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#   ____________________________________________________________________________
+#   Graphe of missing value only                                            ####
+
+##  ............................................................................
+##  For columns with percentage of NA bigger than 0%                        ####
+
+data_with_NA <- pMiss_col %>%
+  dplyr::filter(pMiss_NA_col > 0)
+
+pNA <- data_with_NA$pMiss_NA_col %>% mean()
+
+DF_with_NA <-
+  df[, (which(colnames(df) %in% data_with_NA$Variables))]
+
+##  ............................................................................
+##  For columns with percentage of NA equal to 0%                           ####
+
+data_no_NA <- pMiss_col %>%
+  dplyr::filter(pMiss_NA_col == 0)
+
+DF_no_NA <-
+  df[, (which(colnames(df) %in% data_no_NA$Variables))]
+
+##  ............................................................................
+##  KNN                                                                     ####
+
+dat.kNN <- VIM::kNN(df, k = 5, imp_var = FALSE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#   ____________________________________________________________________________
+#   Générer des NA's                                                        ####
+
+DF_varWith_NA <-
+  dat.kNN[, (which(colnames(dat.kNN) %in% data_with_NA$Variables))]
+
+imp_knn_NA_5 <- DF_varWith_NA %>%
+  ampute(
+    prop = 0.036,
+    bycases = FALSE,
+    freq = c(0.00457, 0.00457, 0.107, 0.0054, 0.055),
+    mech = "MCAR",
+    set.seed(0207)
+  )
+DFimp_knn_NA_5 <- imp_knn_NA_5$amp
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+NA_percentage_colgenerate <- NA_percentage(DFimp_knn_NA_5)
+
+pMiss_colgenerate <- data.frame(
+  Variables_generate = colnames(DFimp_knn_NA_5),
+  pMiss_NA_col_generate = apply(DFimp_knn_NA_5, 2, NA_percentage_col)
+)
+
+pMiss_colgenerate %>%
+  ggplot(mapping = aes(
+    x = reorder(Variables_generate, -pMiss_NA_col_generate),
+    y = pMiss_NA_col_generate,
+    fill = as.factor(pMiss_NA_col_generate)
+  )) +
+  geom_bar(stat = "identity") +
+  labs(
+    x = "Variables",
+    y = "Pourcentage",
+    title = "Pourcentage des NA's par colonne"
+  ) +
+  geom_text(aes(label = paste0(pMiss_colgenerate$pMiss_NA_col_generate %>% round(2), "%")), vjust = -0.2) +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE }
+Data_gener_init_melt <- pMiss_colgenerate %>%
+  mutate(pNA_init = gg_pMisssup0$pMiss_NA_col) %>%
+  melt(id = "Variables_generate")
+
+gg_col_gener <- Data_gener_init_melt %>%
+  ggplot(mapping = aes(
+    x = reorder(Variables_generate, -value),
+    y = value,
+    fill = variable
+  )) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = paste0(Data_gener_init_melt$value %>% round(2), "%")), vjust = -0.2, position = position_dodge(width = 0.9), size = 3) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093"), labels = c("Base de test", "Base initiale")) +
+  labs(
+    x = "Variables",
+    y = "Percentage",
+    fill = "Pourcentage des NA's",
+    title = "Comparaison du pourcentage des NA's initiales et générées"
+  ) +
+  # scale_fill_discrete(labels = c("Base de test", "Base initiale")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+gg_col_gener
+```
+
+**\underline{Interprétation}** : 
+
+Le graphe ci-dessus est une comparaison du pourcentage des valeurs manquantes par colonne dans notre jeu de données initial et la base de test (imputée par KNN) après avoir générer des NA's avec les mêmes pourcentages et avec le mécanisme **MCAR**.
+
+Nous observons dans ce graphe que les pourcentages obtenus dans les deux jeux de données sont très proche.
+
+**\underline{Conséquence}** : 
+
+Ce résultat est très robuste, car il va nous permettre d'appliquer différentes méthodes d'imputation des NA's sur cette base (base de test) dont on connaît les vraies valeurs et qui va rendre possible le calcul de la précision de chaque méthode utilisée.
+
+### Choix de la méthode d'imputation
+
+L’imputation de données manquante réfère au fait qu’on remplace les valeurs manquantes dans le jeu de données par des valeurs artificielles. Pour imputer ces valeurs manquantes, nous disposons de plusieurs méthodes d'imputation. Parmi ces dernières, nous allons tester les méthodes suivantes :
+
+- Médianne/Mode
+
+- rf \footnote{Random Forest imputations}
+
+- pmm \footnote{predictive mean matching}
+
+- cart \footnote{Classification and regression trees}
+
+- KNN \footnote{k-nearest neighbors}
+
+Pour l'imputation par la Médianne/Mode, nous allons remplacer les données manquantes dans les variables quantitatives par la médiane et dans les variables qualitatives par le mode \footnote{Mode : La modalité la plus présente.}.
+
+Pour les méthodes **rf**, **pmm** et **cart**, nous allons se servir de la fonction **mice()** prédéfinie dans **R**. Cette dernière nous donne la possibilité de choisir la méthode d'imputation ainsi que le nombre maximal d'itérations.
+
+Pour la méthode **KNN**, nous allons utiliser la fonction **kNN()**.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# data final
+DF <-
+  cbind(DF_no_NA, DFimp_knn_NA_5) %>%
+  as.data.frame() %>%
+  dplyr::select(Intoxications %>%
+    colnames())
+
+#   ____________________________________________________________________________
+#   II. Imputation methods                                                  ####
+
+# data final
+
+##  ............................................................................
+##  II.1. Using mode médianne                                               ####
+Intox <- DF
+
+### Imputation par la médianne pour les variables quantitatives
+
+Intox <- Intox %>% replace_na(list(
+  eclair = median(Intox$eclair, na.rm = T),
+  age = median(Intox$age, na.rm = T)
+))
+
+### Imputation par le mode pour les variables qualitatives
+
+Intox <- Intox %>% replace_na(list(
+  Boeuf = Mode(Intox$Boeuf, na.rm = T),
+  Oeuf = Mode(Intox$Oeuf, na.rm = T),
+  Eau = Mode(Intox$Eau, na.rm = T)
+))
+
+##  ............................................................................
+##  II.1. Using rf                                                          ####
+
+tempData_rf <- mice(
+  DF,
+  m = 1,
+  maxit = 2,
+  meth = "rf",
+  seed = 500
+)
+
+completedData_mice_rf <- mice::complete(tempData_rf, 1)
+
+##  ............................................................................
+##  II.2. Using knn                                                         ####
+tempData_knn <- VIM::kNN(DF, k = 2, imp_var = FALSE)
+
+##  ............................................................................
+##  II.3. Using pmm                                                         ####
+tempData_pmm <- mice(
+  DF,
+  m = 1,
+  maxit = 4,
+  meth = "pmm",
+  seed = 500
+)
+
+completedData_mice_pmm <-
+  mice::complete(tempData_pmm, 1)
+
+##  ............................................................................
+##  II.3. Using Classification and regression trees                         ####
+tempData_cart <- mice(
+  DF,
+  m = 1,
+  maxit = 7,
+  meth = "cart",
+  seed = 500
+)
+
+completedData_mice_cart <- mice::complete(tempData_cart, 1)
+
+
+
+#   ____________________________________________________________________________
+#   III. Calculate precision of all methods                                 ####
+
+Med_Mod_imput <- Precision(df, dat.kNN, Intox, DFimp_knn_NA_5)
+Med_Mod_imput_MSE <- err_prediction(dat.kNN, Intox)
+
+rf_impute <- Precision(df, dat.kNN, completedData_mice_rf, DFimp_knn_NA_5)
+rf_impute_MSE <- err_prediction(dat.kNN, completedData_mice_rf)
+
+knn_impute <- Precision(df, dat.kNN, tempData_knn, DFimp_knn_NA_5)
+knn_impute_MSE <- err_prediction(dat.kNN, tempData_knn)
+
+pmm_impute <- Precision(df, dat.kNN, completedData_mice_pmm, DFimp_knn_NA_5)
+pmm_impute_MSE <- err_prediction(dat.kNN, completedData_mice_pmm)
+
+cart_impute <- Precision(df, dat.kNN, completedData_mice_cart, DFimp_knn_NA_5)
+cart_impute_MSE <- err_prediction(dat.kNN, completedData_mice_cart)
+
+
+Data_all_method <- rf_impute %>%
+  mutate(
+    rf = rf %>% round(2) %>% scales::percent(),
+    knn = knn_impute$rf %>% round(2) %>% scales::percent(),
+    pmm = pmm_impute$rf %>% round(2) %>% scales::percent(),
+    cart = cart_impute$rf %>% round(2) %>% scales::percent(),
+    mod_med = Med_Mod_imput$rf %>% round(2) %>% scales::percent()
+  ) 
+
+Data_all_MSE <- rf_impute_MSE %>%
+  mutate(
+    knn = knn_impute_MSE$MSE,
+    pmm = pmm_impute_MSE$MSE,
+    cart = cart_impute_MSE$MSE,
+    Med_mod = Med_Mod_imput_MSE$MSE
+  )
+
+colnames(Data_all_MSE) <-
+  c("Variables", "rf", "knn", "pmm", "cart", "Med_mod")
+
+mean_imput_MSE <- data.frame(
+  method = c("rf", "knn", "pmm", "cart", "Med_mod"),
+  mean_error = c(
+    mean(Data_all_MSE$rf),
+    mean(Data_all_MSE$knn),
+    mean(Data_all_MSE$pmm),
+    mean(Data_all_MSE$cart),
+    mean(Data_all_MSE$Med_mod)
+  )
+)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Data_all_method %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Précision des méthodes pour l'imputation des variables qualitatives",
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(0:3,
+    bold = T,
+    background = "white"
+  ) %>%
+  column_spec(c(3, 5, 6), bold = T, color = "#DB7093")
+```
+
+Le tableau ci-dessus nous montre la précision des méthodes d'imputation utilisées pour les variables qualitatives.
+
+Nous observons que les méthodes **KNN**, **cart** et **Médiane/Mode** sont les plus précises. elles ont pu imputer correctement **100% des valeurs manquantes** pour les variables Oeuf (*6 NA's*) et Eau (*5 NA's*) et **83%** pour la variable Boeuf (*5 NA's*)
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Data_all_MSE %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Précision des méthodes pour l'imputation des variables quantitatives",
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(0:2,
+    bold = T,
+    background = "white"
+  ) %>%
+  column_spec(5, bold = T, color = "#DB7093")
+```
+
+Le tableau ci-dessus nous donne l'erreur quadratique moyenne (*MSE*) obtenue entre les valeurs de la base de test et les valeurs imputées par chaque méthode pour les deux variables quantitatives.
+
+Nous déduisons que la méthode **cart** est la plus précise en moyenne.
+
+Nous avons décidé d'imputer par la méthode **cart**, car elle donne l'erreur la plus faible pour les variables quantitatives et une précision pareille que les méthodes **KNN** et **Médianne/Mode** pour les variables qualitatives.
+
+# Régression logistique avec Y dichotomique
+
+Après avoir imputer les données manquantes, nous allons maintenant créer une nouvelle variable **Malade** qui sera **Dichotomique**.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#   ____________________________________________________________________________
+#   Imputation des NA's par la méthode cart                                 ####
+
+tempData_cart <- mice(
+  df,
+  m = 1,
+  maxit = 7,
+  meth = "cart",
+  seed = 500
+)
+
+intox_cart <- mice::complete(tempData_cart, 1) %>%
+  dplyr::select(Intoxications %>% names())
+
+intox_cart %>%
+  is.na() %>%
+  sum()
+
+intox_cart$Boeuf <- intox_cart %>%
+  .$Boeuf %>%
+  factor()
+intox_cart$Eau <- intox_cart %>%
+  .$Eau %>%
+  factor()
+intox_cart$Oeuf <- intox_cart %>%
+  .$Oeuf %>%
+  factor()
+intox_cart$sex <- intox_cart %>%
+  .$sex %>%
+  factor()
+
+#   ____________________________________________________________________________
+#   Codage des variables (Variable dichotomique)                            ####
+
+# Si l'une des variables de symptôme est égale 1 alors le patient est malade.
+
+Intox_dicho <- intox_cart %>%
+  mutate(malade_dicho = ifelse((Diarree + Douleur + Vomissements + Nausee) == 0, 0, 1)) %>%
+  dplyr::select(-c("Diarree", "Douleur", "Vomissements", "Nausee"))
+
+Intox_dicho$malade_dicho <- Intox_dicho %>%
+  .$malade_dicho %>%
+  factor()
+```
+
+## Variable dichotomique :
+
+**\underline{Définition}** : Une variable dichotomique est une variable qualitative qui ne peut prendre que 2 modalités : OUI ou NON ; masculin ou féminin ; malade ou sain , etc....
+
+Pour créer la variable **dichotomique**, nous allons regarder si l'individu n'avait aucun symptôme alors il n'est pas malade (0), sinon il est malade (1).
+
+Le tablteau ci-dessous nous présente un résumé de cette nouvelle variable.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+data.frame(
+  malade = c("Oui", "Non"),
+  Nombre_Individus = c((Intox_dicho$malade_dicho == 1) %>% sum(), (Intox_dicho$malade_dicho == 0) %>% sum())
+) %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Résumé de la variable malade (dichotomique)",
+    col.names = c("Malade", "Nombre d'individus")
+  ) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(0:2),
+    bold = T,
+    background = "white"
+  )
+```
+
+Nous observons que parmi les 1094 individus, **469** *(42%)* individus sont malade (*Représente au moins un symptôme*) et **625** *(57%)* ne le sont pas.
+
+**\underline{Statistiques descriptives}** : 
+
+Le graphe ci-dessous est une représentation des variables explcatives quantitatives (*Age, Eclairs*) en fonction de la variable dichotomique **Malade** : 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+pop1 <- Intox_dicho %>%
+  ggplot() +
+  geom_boxplot(
+    aes(
+      x = factor(malade_dicho),
+      y = age,
+      fill = factor(malade_dicho)
+    ),
+    outlier.colour = "black",
+    outlier.shape = 21,
+    outlier.size = 2
+  ) +
+  scale_fill_manual(
+    values = c("#00CED1", "#DB7093"), name = "Malade",
+    breaks = c("0", "1"),
+    labels = c("Non", "Oui")
+  ) +
+  labs(
+    x = "Malade",
+    y = "Age",
+    title = "Age et Malade"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+pop2 <- Intox_dicho %>%
+  ggplot() +
+  geom_boxplot(aes(
+    x = factor(malade_dicho),
+    y = eclair,
+    fill = factor(malade_dicho)
+  ),
+  outlier.colour = "black",
+  outlier.shape = 21,
+  outlier.size = 2
+  ) +
+  labs(
+    x = "Malade",
+    y = "Eclairs",
+    title = "Eclairs et Malade"
+  ) +
+  scale_fill_manual(
+    values = c("#00CED1", "#DB7093"), name = "Malade",
+    breaks = c("0", "1"),
+    labels = c("Non", "Oui")
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+grid.arrange(pop1, pop2, ncol = 2, nrow = 1)
+```
+
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+
+data.frame(
+  Malade = c("Oui", "Non"),
+  Eclairs = c(
+    Intox_dicho %>% filter(malade_dicho == 1) %>% .$eclair %>% median(),
+    Intox_dicho %>% filter(malade_dicho == 0) %>% .$eclair %>% median()
+  ),
+  Age = c(
+    Intox_dicho %>% filter(malade_dicho == 1) %>% .$age %>% median(),
+    Intox_dicho %>% filter(malade_dicho == 0) %>% .$age %>% median()
+  )
+) %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Médianes",
+    col.names = c("Malade", "Eclairs", "Age")
+  ) %>%
+  add_header_above(c(" ", "Médianes" = 2), bold = T, color = "#DB7093") %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(0:2),
+    bold = T,
+    background = "white"
+  )
+```
+
+Pour l'age, nous abservons que les médianes sont au même niveau. Cela veut dire que l'age de l'individu n'a pas d'effet sur le fait que celui-ci tombe malade.
+
+Pour les éclairs, nous constatons que la médiane pour les personnes malades (*= 2*) est en dessus de celui des personnes non-malades (*= 1 *). Nous observons aussi des individus toxiqués sans avoir mangé d'éclairs et deux individus non-malades ont mangé 19 et 20 éclairs.
+
+le graphe ci-dessous représente les variables explicatives qualitatives en fonction de la variable malade.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE }
+
+m1 <- Intox_dicho %>%
+  group_by(malade_dicho, Boeuf) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_dicho, y = counts, fill = Boeuf %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  labs(
+    x = "Malade",
+    fill = "Boeuf",
+    title = "Boeuf et malade"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+m2 <- Intox_dicho %>%
+  group_by(malade_dicho, Eau) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_dicho, y = counts, fill = Eau %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "Eau",
+    title = "Eau et malade"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+m3 <- Intox_dicho %>%
+  group_by(malade_dicho, Oeuf) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_dicho, y = counts, fill = Oeuf %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "Oeuf",
+    title = "Oeuf et malade"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+m4 <- Intox_dicho %>%
+  group_by(malade_dicho, sex) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_dicho, y = counts, fill = sex %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "sexe",
+    title = "sexe et malade"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+(m3 | m4) / (m1 | m2)
+```
+
+D'après les trois premiers graphes, nous constatons qu'on a très peu de personnes malades après avoir bu de l'eau ou mangé du boeuf ou des oeufs. Cependant nous observons dans le dernier graphe que les femmes ont plus de chance de tomber malade par rapport aux hommes.
+
+## Régression logistique 
+
+Nous allons maintenant mener une première étude, en prenant la variable malade (**0 = non-malade, 1 = malade**). Comme celui-ci est dichotomique, nous allons effectuer une **régression logistique** en prenant en compte les variables explicatives (*sexe* et *eclair*) et les intéractions entre les variables (*Eau, age, Boeuf, Oeuf*).
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+model_dicho <- glm(
+  malade_dicho ~ sex + eclair + age * Boeuf * Oeuf * Eau,
+  data = Intox_dicho,
+  family = "binomial"
+)
+
+model_dicho %>%
+  tidy() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    longtable = T,
+    caption = "Premier modèle logistique pour la variable dichotomique",
+    col.names = c("Variables", "Coefficients", "Erreur standard", "Statistique", "Valeur p")
+  ) %>%
+  kable_styling(full_width = T, latex_options = c("repeat_header")) %>%
+  row_spec(c(2, 3, 4, 7), color = "#DB7093", bold = T) %>%
+  row_spec(c(0:18),
+    bold = T,
+    background = "white"
+  )
+```
+
+Seules les variables **sexe**, **Eclairs**, **Age** sont significatives au risques de se tromper de **5%**. Nous observons aussi que la variable **Eau** est significative au risque de se tromper de **9%**.
+
+**\underline{Définition AIC}**(*(Akaike Information Criterion*) : 
+ $$AIC = -2\ln(V) + 2k$$
+Où:
+
+-k est le nombre de paramètres
+
+-2k représente la pénalité
+
+-V est la vraisemblance.
+
+On va maintenant utiliser une méthode de séléction de variables pour nous permettre d'avoir un meilleur modèle avec seulement les variables suceptibles d'expliquer notre variable d'intérêt **Malade**. Nous allons prendre la méthode qui permet de trouver le meilleur modèle en minimisant le critère **AIC**.
+Le résultat obtenu est le suivant : 
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+model_dicho %>% stepAIC(direction = "backward")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+model_dicho_AIC <- glm(
+  formula = malade_dicho ~ sex + eclair + age + Oeuf + Eau + age:Eau,
+  family = "binomial",
+  data = Intox_dicho
+)
+
+
+
+model_dicho_AIC %>%
+  tidy() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Modèle logistique choisi par le critère AIC pour la variable dichotomique",
+    col.names = c(
+      "Variables",
+      "Coefficients",
+      "Erreur standard",
+      "Statistique",
+      "Valeur p"
+    )
+  ) %>%
+  kable_styling(
+    full_width = T,
+    latex_options = c("striped", "hold_position")
+  ) %>%
+  row_spec(c(2:7), color = "#DB7093", bold = T) %>%
+  row_spec(c(0:7),
+    bold = T,
+    background = "white"
+  )
+```
+
+Nous constatons qu'avec ce nouveau modèle, les variables **Eclairs**, **Sexe**, **Age**, **Eau** et l'intéraction **Age:Eau**  sont significatives au risques de se tromper de **5%**. Nous observons aussi que la variable **Oeuf** est significative au risque de se tromper de **8%**.
+
+Intéressons nous maintenant aux coefficients et leurs intervalles de confiance.
+
+\newpage
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+coef <- cbind(coef(model_dicho_AIC), confint(model_dicho_AIC, level = 0.95))
+
+coef %>%
+  tidy() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Coefficients et leurs intervalles de confiance pour la variable dichotomique",
+    col.names = c("Variables", "Coefficients", "2.5%", "97.5%")
+  ) %>%
+  kable_styling(full_width = T, latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(2,3,4,6,7), color = "#008080", bold = T) %>% 
+  row_spec(c(0:7),
+    bold = T,
+    background = "white"
+  )
+  
+```
+
+Le graphe ci-dessus nous donne les coefficients obtenus pour chaque variable, intéraction et leurs intervalles de confiance.
+
+Pour nous permettre de repérer les coefficients significatifs, on représente sous forme de graphique les résultats obtenus précédemment :
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+coef1 <- coef %>%
+  as.data.frame()
+
+Coef1 <- coef1 %>%
+  mutate(variables = coef1 %>% rownames()) %>%
+  rename("Coeff" = "V1", "MIN" = "2.5 %", "MAX" = "97.5 %") %>%
+  mutate(in_on = ifelse(MIN < 0 & 0 < MAX, 0, 1))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+signif_errbars <- Coef1 %>% filter(in_on == 1)
+
+
+Coef1 %>%
+  ggplot(mapping = aes(y = variables, x = Coeff)) +
+  geom_point() +
+  geom_errorbarh(mapping = aes(xmin = MIN, xmax = MAX)) +
+  annotate(geom = "point", y = signif_errbars$variables, x = signif_errbars$Coeff, col = "#008080") +
+  geom_errorbarh(mapping = aes(xmin = MIN, xmax = MAX, col = "#DB7093"), data = signif_errbars) +
+  scale_color_manual(values = "#008080") +
+  labs(
+    y = "Termes",
+    x = "Estimations",
+    title = "Représentation des Coefficients"
+  ) +
+  geom_vline(xintercept = 0, col = "brown") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Nous pourrons rien dire sur les coefficients avec un intervalle de confiance contenant la valeur **0**, autrement dit, tous les segments croisant la droite **rouge**.
+
+L'odds de tomber malade losrque la personne est un homme sera multiplier par au moins **exp(0.0955459) = 1.1003** et par au plus **1.9234**.
+
+L'odds de tomber malade losrque la personne a bu de l'eau sera multiplier par au moins **0.0067** et par au plus **0.6311**.
+
+En augmentant l'âge de la personne par une année, l'odds d'être malade sera multiplier par au moins **0.7596** et par au plus **0.9092**.
+
+En augmentant le nombre d'éclairs mangées par une eclair, l'odds d'être malade sera multiplier par au moins **1.6918** et par au plus **2.1281**.
+
+Pour l'intéraction entre **age** et **Eau1**, on estime : 
+$$\beta = log(\frac{odds
+(Y = 1 | Age = x + 1, Eau = 1)}{odds
+(Y = 1 | Age = x , Eau = 1)}) - log(\frac{odds
+(Y = 1 | Age = x + 1, Eau = 0)}{odds
+(Y = 1 | Age = x , Eau = 0)})$$
+
+Nous nous intéressons à la différence entre l'effet de l'age sur la maladie parmi les buveurs et non-buveurs d'eau.
+
+Nous constatons que l'effet de l'age chez les buvreurs d'eau est plus élevé que l'effet chez les non-buveurs. Parmis les buveaurs d'eau, l'effet de l'augmentation de l'âge d'une année va être multiplié par au moins **1.0690** et par au plus **1.283058**.
+
+## Résumé
+
+La variable dichotomique (**Malade**) est expliquée par l'**âge**, le **sexe**, le nombre d'**éclairs** mangés et le fait de boire ou non de l'**eau**. Elle est aussi expliqué par l'intéraction entre l'**âge** et le fait de boire de l'**eau** ou pas.
+
+L'odds ratio de l'âge est inférieur à 1. Cela veut dire qu'un jeune a plus de risque de tomber malade que les vieux.
+
+Le fait d'être buveur d'eau est un facteur protecteur, un buveur d'eau diminue l'odds de tomber malade.
+
+l'odds ratio de l'éclair est supérieur à 1. Cela signifie que plus on mange des éclairs plus on risque de tomber malade.
+
+Le fait d'être homme est un facteur de risque, un homme a plus de chance de tomber malade qu'une femme.
+
+Les non-buveurs d'eau parmi les personnes agés ont plus de risque de tomber malade que les buveurs d'eau parmi les personnes ayant le même âge.
+
+\newpage
+
+# Régression logistique avec Y polytomique ordonnée
+
+Après avoir étudier le cas d'une variable **dichotomique**, nous allons maintenant créer une nouvelle variable avec un niveau de symptomes dite **Polytomique**.
+
+## Variable polytomique
+
+**\underline{Définition : }** Une variable polytomique est une variable qui peut prendre plus de deux modalités qui sont ordonnées entre elles, *petit, moyen, grand*; *passable, assez bien, bien*,...
+
+Pour créer cette nouvelle variable, nous regardons si l'individu n'avait pas de symptome la variable prendra la modalité (**Sans symptome**), s'il a un ou deux symptomes la variable prendra (**Peu**), sinon la variable prendra (**Beaucoup**). Cette variable contiendra trois modalités allons de **Pas malade** à **Beaucoup**. Le tableau ci-dessu nous donne le nombre d'individus par modalité:
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+Intox_Polytomic <- intox_cart %>%
+  mutate(malade_polytom = Diarree + Douleur + Vomissements + Nausee) %>%
+  mutate(malade_polytom = ifelse(
+    malade_polytom %in% c(4, 3),
+    "Beaucoup",
+    ifelse(
+      malade_polytom %in% c(1, 2),
+      "Peu",
+      ifelse(malade_polytom == 0, "Sans symptome", malade_polytom)
+    )
+  )) %>%
+  dplyr::select(-c("Diarree", "Douleur", "Vomissements", "Nausee"))
+
+Intox_Polytomic$malade_polytom <- factor(Intox_Polytomic$malade_polytom,
+  levels = c("Sans symptome", "Peu", "Beaucoup"),
+  order = T
+)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Intox_Polytomic$malade_polytom %>%
+  as.factor() %>%
+  summary() %>%
+  tidy() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Nombre d'individus par niveau de symptomes",
+    col.names = c("Niveau de symptomes", "Nombre d'individus")
+  ) %>%
+  kable_styling(full_width = T, latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(0:3),
+    bold = T,
+    background = "white"
+  )
+```
+
+**\underline{Statistiques descriptives}** : 
+
+Nous reproduissons les mêmes graphiques que pour la variable dichotomique : 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+pop11 <- Intox_Polytomic %>%
+  ggplot() +
+  geom_boxplot(
+    aes(
+      x = factor(malade_polytom),
+      y = age,
+      fill = factor(malade_polytom)
+    ),
+    outlier.colour = "black",
+    outlier.shape = 21,
+    outlier.size = 2
+  ) +
+  scale_fill_manual(
+    values = c("#00CED1", "#DB7093", "#0256a1"),
+    name = "",
+    breaks = c("Beaucoup", "Peu", "Sans symptome")
+  ) +
+  labs(
+    x = "Niveau de symptomes",
+    y = "Age",
+    title = "Age et Niveau de symptomes"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+pop22 <- Intox_Polytomic %>%
+  ggplot() +
+  geom_boxplot(aes(
+    x = factor(malade_polytom),
+    y = eclair,
+    fill = factor(malade_polytom)
+  ),
+  outlier.colour = "black",
+  outlier.shape = 21,
+  outlier.size = 2
+  ) +
+  scale_fill_manual(
+    values = c("#00CED1", "#DB7093", "#0256a1"),
+    name = "",
+    breaks = c("Beaucoup", "Peu", "Sans symptome")
+  ) +
+  labs(
+    x = "Niveau de symptomes",
+    y = "Eclairs",
+    title = "Eclairs et Niveau de symptomes"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+
+grid.arrange(pop11, pop22, ncol = 2, nrow = 1)
+```
+
+Pour l’âge, les trois boxplots semblent identiques . Les personnes avec peu et beaucoup de symptome ont l’air plus jeunes, avec quelques exceptions (*une personne de 58 ans a beaucoup de symptomes*).
+
+
+Pour les éclairs, Nous constatons que les médianes pour les personnes avec **peu** et **Beaucoup** de symptomes sont identiques (= 2) et en dessus de celui des individus **Sans symptomes** (= 1 ). 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+mm1 <- Intox_Polytomic %>%
+  group_by(malade_polytom, Boeuf) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_polytom, y = counts, fill = Boeuf %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.8),
+    size = 3
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  labs(
+    x = "Malade",
+    fill = "Boeuf",
+    title = "Boeuf et niveau de symptome"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+mm2 <- Intox_Polytomic %>%
+  group_by(malade_polytom, Eau) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_polytom, y = counts, fill = Eau %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.9),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "Eau",
+    title = "Eau et niveau de symptome"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+mm3 <- Intox_Polytomic %>%
+  group_by(malade_polytom, Oeuf) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_polytom, y = counts, fill = Oeuf %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.8),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "Oeuf",
+    title = "Oeuf et niveau de symptome"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+mm4 <- Intox_Polytomic %>%
+  group_by(malade_polytom, sex) %>%
+  summarise(counts = n()) %>%
+  ggplot(mapping = aes(x = malade_polytom, y = counts, fill = sex %>% factor(levels = c(1, 0)))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = counts),
+    color = "black",
+    position = position_stack(vjust = 0.9),
+    size = 3
+  ) +
+  labs(
+    x = "Malade",
+    fill = "sexe",
+    title = "sexe et niveau de symptome"
+  ) +
+  scale_fill_manual(values = c("#00CED1", "#DB7093")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+(mm3 | mm4) / (mm1 | mm2)
+```
+
+Pour le sexe, nous observons, comme pour la variable dichotomique, qu'un homme a plus de risque de tomber malade qu'une femme. 
+
+Pour l'Eau, l'oeuf et le boeuf, nous observons que les graphes sont assez similaires. Nous constatons plus le niveau de symptomes augmente de **Peu** à **Beaucoup** plus l'individu a consommé ces aliments.
+
+## Régression logistique avec Y polytomique ordonnée
+
+Nous allons dans cette partie étudier la variable **Niveau de symptome** en appliquant une régression logistique polytomique ordonnée. Les modalités de cette variable sont ordonnées comme suit : (*Sans symptome* < *Peu* < *Beaucoup*).
+
+Nous prendrons en compte toutes les variables explicatives, l'intéraction entre les variables (*sexe* et *eclair*) et toutes les intéraction de niveau trois maximum entre les variables (*Boeuf, Oeuf, age, Eau*).
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+model_poly <- polr(malade_polytom ~ sex + eclair + 
+                     sex * eclair + 
+                     Oeuf * Eau * Boeuf + 
+                     Oeuf * Eau * age + 
+                     Eau * Boeuf * age + 
+                     age * Boeuf * Oeuf, 
+                   data = Intox_Polytomic)
+
+
+model_poly %>%
+  tidy() %>%
+  as.data.frame() %>%
+  dplyr::select(-coefficient_type) %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    longtable = T,
+    caption = "Première régression logistique polytomique ordonnée",
+    col.names = c(
+      "Variables",
+      "Coefficients",
+      "Erreur standard",
+      "Statistique"
+    )
+  ) %>%
+  pack_rows(
+    "Intercepts",
+    18,
+    19,
+    latex_gap_space = "0.3em",
+    hline_before = T,
+    hline_after = T,
+    bold = F
+  ) %>%
+  kable_styling(
+    full_width = T,
+    latex_options = c("striped", "hold_position")
+  ) %>%
+  row_spec(c(0:19),
+    bold = T,
+    background = "white"
+  )
+```
+
+Afin d'enlever les termes non significatifs et  choisir le bon modèle, nous allons réadopter le critère AIC. 
+
+Nous obtenons le résultat suivant:
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+model_poly %>% stepAIC(direction = "backward")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+model_poly_AIC <- polr(formula = malade_polytom ~ sex + eclair + Oeuf + Eau + age + sex:eclair + Oeuf:Eau + Oeuf:age + Eau:age + Oeuf:Eau:age, data = Intox_Polytomic)
+
+
+
+model_poly_AIC %>%
+  tidy() %>%
+  as.data.frame() %>%
+  dplyr::select(-coefficient_type) %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    caption = "Régression polytomique ordonnée choisie par le critère AIC",
+    col.names = c(
+      "Variables",
+      "Coefficients",
+      "Erreur standard",
+      "Statistique"
+    )
+  ) %>%
+  pack_rows(
+    "Intercepts",
+    11,
+    12,
+    latex_gap_space = "0.3em",
+    hline_before = T,
+    hline_after = T,
+    bold = F
+  ) %>%
+  kable_styling(
+    full_width = T,
+    latex_options = c("striped", "hold_position")
+  ) %>%
+  row_spec(c(0:12),
+    bold = T,
+    background = "white"
+  )
+```
+
+Intéressons-nous maintenant aux coefficients ainsi qu’à leurs intervalle de confiance.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+coefpoly <- cbind(coef(model_poly_AIC), confint(model_poly_AIC, level = 0.95))
+
+coefpoly %>%
+  tidy() %>%
+  kable(
+    format = "latex",
+    booktabs = T,
+    longtable = T,
+    caption = "Coefficients et leurs intervalles de confiance pour la variable polytomique",
+    col.names = c("Variables", "Coefficients", "2.5%", "97.5%")
+  ) %>%
+  kable_styling(full_width = T, latex_options = c("striped", "hold_position")) %>%
+  row_spec(c(1,2,5,6), color = "#008080", bold = T) %>% 
+  row_spec(c(0:10),
+    bold = T,
+    background = "white"
+  )
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+coefpoly1 <- coefpoly %>%
+  as.data.frame()
+
+Coefpoly1 <- coefpoly1 %>%
+  mutate(variables = coefpoly1 %>% rownames()) %>%
+  rename("Coeff" = "V1", "MIN" = "2.5 %", "MAX" = "97.5 %") %>%
+  mutate(in_on = ifelse(MIN <= 0 & 0 <= MAX, 0, 1))
+```
+
+Pour nous permettre de repérer les coefficients significatifs, on représente sous forme de graphique les résultats obtenus précédemment :
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+signif_errbars_poly <- Coefpoly1 %>% filter(in_on == 1)
+
+
+Coefpoly1 %>%
+  ggplot(mapping = aes(y = variables, x = Coeff)) +
+  geom_point() +
+  geom_errorbarh(mapping = aes(xmin = MIN, xmax = MAX)) +
+  annotate(geom = "point", y = signif_errbars_poly$variables, x = signif_errbars_poly$Coeff, col = "#008080") +
+  geom_errorbarh(mapping = aes(xmin = MIN, xmax = MAX, col = "#DB7093"), data = signif_errbars_poly) +
+  scale_color_manual(values = "#008080") +
+  labs(
+    y = "Termes",
+    x = "Estimations",
+    title = "Représentation des Coefficients"
+  ) +
+  geom_vline(xintercept = 0, col = "brown") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+$\bullet$ Nous pourrons rien dire sur les coefficients avec un intervalle de confiance contenant **0**.
+
+$\bullet$ Une année de plus sur l'age de l'individu va diviser l'odds de (*Niveau de symptomes* $\le$ *Sans symptome*) par au moins 0.8104 et au plus 0.9467. Cette augmentation divise aussi l'odds de (*Niveau de symptomes* $\le$ *Peu de symptome*) par au moins 0.8104 et au plus 0.9467. L'**age** apparaît comme un **facteur protecteur** de tomber beaucoup malade.
+
+$\bullet$ Le fait d'être homme va diviser l'odds de (*Niveau de symptomes* $\le$ *Sans symptome*) par au moins 1.8147 et au plus 5.1315 par rapport à une femme. Ce fait divise aussi l'odds de (*Niveau de symptomes* $\le$ *Peu de symptome*) par au moins 1.8147 et au plus 5.1315. Le fait d'être un **homme** apparaît comme un **facteur de risque** de tomber beaucoup malade.
+
+$\bullet$ L'augmentation d'une unité sur le nombre d'éclairs mangés par un individu va diviser l'odds de (*Niveau de symptomes* $\le$ *Sans symptome*) par au moins 2.0614 et au plus 3.3308. Cette augmentation divise aussi l'odds de (*Niveau de symptomes* $\le$ *Peu de symptome*) par au moins 2.0614 et au plus 3.3308. Le nombre d'éclairs apparaît comme un **facteur de risque** de tomber beaucoup malade.
+
+$\bullet$ Concernant l'interaction entre eclairs et sexe, on estime :
+
+$\beta = log(\frac{odds (Y = NbSymptomes \le SansSymptome | Ecalirs = x + 1, sex = 1)}{odds(Y = NbSymptomes \le SansSymptome | Ecalirs = x, sex = 1)}) - log(\frac{odds(Y = NbSymptomes \le SansSymptome | Ecalirs = x + 1, sex = 0)}{odds (Y = NbSymptomes \le SansSymptome | Ecalirs = x, sex = 0)})$
+
+Nous regardons la différence entre l'effet du nombre d'éclairs mangés sur la maladie par les hommes et les femmes. L'effet du nombre d'éclairs chez les hommes est inférieur à celui chez les femmes sur la maladie. Parmi les homme, l'effet de l'augmentation des éclairs mangées par une unité va être multiplié par au moins 0.4738077 et par au plus 0.7832159 par rapport à la même augmentation parmis les femmes.
+
+## Résumé 
+
+La variable polytomique (**Niveau de symptomes**) est expliquée par le **sexe**, **Nombre d'eclairs** et **age**. Elle est aussi expliqué par l'interaction entre le **nombre d'éclairs** et le **sexe**.
+
+Le fait d'être homme est un facteur de risque.
+
+Un jeune a plus de risque de tomber malade qu'un vieux. L'âge est un facteur protecteur.
+
+Les homme qui ont eu tendance à manger plus d’éclairs vont moins tomber
+malade que les femmes en ayant mangé le même nombre d’éclairs.
+
+# Conclusion
+
+Nous avons pu dans ce projet appliquer différentes notions abordées dans le cours de biostatistique, en commençant par la description de la table de données, l'imputation des données manquantes, le recodage des variables et finalement l'apliquation des régressions logistiques, nous avons abouti aux résultats : 
+
+Dans ces deux types de régression logistique, nous déduisons que les manifestants sont tomber malade par leur jeune âge, le fait de ne pas boire de l'eau, manger trop d'éclairs et le fait d'être homme.
+
+Les hommes ont été plus intoxiqués que les femmes, toutes caractéristiques égales par ailleurs.
+
+Les buveurs d'eau ont moins de risque de tomber malade que les non buveurs, toutes choses égales par ailleurs. 
